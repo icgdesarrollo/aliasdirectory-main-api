@@ -1,0 +1,10 @@
+# Los scripts y el SQL se ejecutan dentro de contenedores Linux: siempre LF,
+# aunque el checkout sea en Windows. Un CRLF en 01-bootstrap.sh rompe el init de MySQL.
+* text=auto
+*.sh   text eol=lf
+*.sql  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+mvnw   text eol=lf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf

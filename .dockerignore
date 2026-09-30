@@ -1,0 +1,11 @@
+# El contexto de build de los Dockerfile es la raiz del repositorio (multi-modulo).
+**/target/
+.git/
+.github/
+.vscode/
+**/k8s/
+# Infraestructura local: no forma parte de ninguna imagen (y .env trae claves).
+compose.yaml
+docker/
+scripts/
+.env*

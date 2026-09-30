@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>4.1.1</version>
+		<relativePath/>
+	</parent>
+	<groupId>com.icg.aliasdirectory</groupId>
+	<artifactId>aliasdirectory-main-api</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<name>aliasdirectory-main-api</name>
+	<description>API principal del Directorio de Alias: F1a, F1b, F2, F4, F5 y F7. Consume las colas de RabbitMQ y resuelve contra el padron</description>
+
+	<properties>
+		<java.version>25</java.version>
+		<jacoco.version>0.8.15</jacoco.version>
+		<!-- Etiquetas que 'mvn test' NO corre. Vaciarla las incluye:
+		     mvn test -Dexcluded.test.groups= -->
+		<excluded.test.groups>integration</excluded.test.groups>
+		<!-- Version de la libreria de mensajeria (repo aliasdirectory-messaging).
+		     Subirla es cambiar el contrato ISO 20022: revisar el CHANGELOG de ese
+		     repo antes, porque lo que cambie ahi afecta tambien al otro servicio. -->
+		<aliasdirectory-messaging.version>0.0.1-SNAPSHOT</aliasdirectory-messaging.version>
+		<sonar.projectKey>icgdesarrollo_aliasdirectory-main-api</sonar.projectKey>
+		<sonar.organization>icgdesarrollo</sonar.organization>
+		<sonar.host.url>https://sonarcloud.io</sonar.host.url>
+		<sonar.coverage.jacoco.xmlReportPaths>target/site/jacoco/jacoco.xml</sonar.coverage.jacoco.xmlReportPaths>
+	</properties>
+
+	<!--
+		PENDIENTE: completar con el Nexus de ICG y descomentar.
+
+		Sin esto, la mensajeria se resuelve desde el repositorio local y hay que
+		instalarla a mano cada vez que cambie:
+
+		    cd ..\aliasdirectory-messaging && .\mvnw install
+
+	<repositories>
+		<repository>
+			<id>icg-nexus</id>
+			<url>https://NEXUS.icg.com.gt/repository/maven-public/</url>
+		</repository>
+	</repositories>
+	-->
+
+	<dependencies>
+		<dependency>
+			<groupId>com.icg.aliasdirectory</groupId>
+			<artifactId>messaging-spring-boot-starter</artifactId>
+			<version>${aliasdirectory-messaging.version}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-webmvc</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+
+		<!-- Consumidor de las colas por banco. La API principal no expone los
+		     endpoints ISO: los recibe Dispatch y se los pasa por la cola. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-amqp</artifactId>
+		</dependency>
+
+		<!-- Base de datos: la app entra como alias_directory_app; Flyway migra como alias_directory_migrator
+		     (spring.flyway.user/password). El esquema lo manda Flyway, no hay JPA. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-jdbc</artifactId>
+		</dependency>
+
+		<!-- Portal de Call Center (E15): el BFF valida el JWT que emite Keycloak.
+		     Sólo /portal/** queda protegido; las colas de AMQP no pasan por aquí. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-flyway</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-mysql</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>com.mysql</groupId>
+			<artifactId>mysql-connector-j</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- Las pruebas levantan un MySQL 8 real (Testcontainers 2.x: artefacto testcontainers-mysql). -->
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-mysql</artifactId>
+			<scope>test</scope>
+		</dependency>
+		</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<excludedGroups>${excluded.test.groups}</excludedGroups>
+				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.jacoco</groupId>
+				<artifactId>jacoco-maven-plugin</artifactId>
+				<version>${jacoco.version}</version>
+				<executions>
+					<execution>
+						<id>prepare-agent</id>
+						<goals><goal>prepare-agent</goal></goals>
+					</execution>
+					<execution>
+						<id>report</id>
+						<phase>test</phase>
+						<goals><goal>report</goal></goals>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+</project>

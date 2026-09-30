@@ -1,0 +1,16 @@
+name: Build & SonarCloud
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  sonar:
+    uses: icgdesarrollo/ci-workflows/.github/workflows/sonar-java-maven.yml@e8ddff5bcd15863ce1fe9662684e08f4514f0597
+    with:
+      # El workflow reusable compila con JDK 21 por omision; este proyecto es Java 25.
+      java-version: '25'
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
