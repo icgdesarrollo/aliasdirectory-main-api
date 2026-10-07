@@ -164,6 +164,24 @@ public class CancellationService {
 
     private Response cancelEverywhere(ProxyCancellation1 request, String requestingBic,
             int bankId) {
+        // ALL_BANKS da de baja registros de OTRAS entidades. El Anexo F5 lo trata
+        // como autorización elevada y el padrón la guarda en
+        // participant_bank.allows_all_banks, que nace en 0 para todas: concederla
+        // es gobernanza de Banguat, no un valor por omisión.
+        //
+        // Esta guarda faltaba. Sin ella cualquier banco participante podía dar de
+        // baja el alias de cualquier otro, y el sistema lo ejecutaba y lo
+        // reportaba como exitoso. Se verificó el 05/10/2026 contra el ambiente de
+        // desarrollo antes de corregirlo.
+        //
+        // Va antes de resolver el alias a propósito: un banco no autorizado no
+        // debe poder averiguar, por la diferencia entre un 403 y un 409, si un
+        // alias existe en otra entidad.
+        if (!cancellations.allowsAllBanks(bankId)) {
+            log.warn("baja rechazada: banco={} alcance=ALL_BANKS motivo=sin-autorizacion",
+                    requestingBic);
+            throw new ScopeNotAuthorizedException(requestingBic);
+        }
         if (request.getPrxy() == null) {
             throw new InvalidCancellationException(
                     "La baja ALL_BANKS identifica el alias por Prxy (hallazgos H-22 y H-50)");
@@ -298,6 +316,13 @@ public class CancellationService {
     public static class InvalidCancellationException extends RuntimeException {
         public InvalidCancellationException(String message) {
             super(message);
+        }
+    }
+
+    /** El banco pidió un alcance que el padrón no le autoriza (Anexo F5). */
+    public static class ScopeNotAuthorizedException extends RuntimeException {
+        public ScopeNotAuthorizedException(String bic) {
+            super("La entidad " + bic + " no tiene autorizado el alcance ALL_BANKS");
         }
     }
 

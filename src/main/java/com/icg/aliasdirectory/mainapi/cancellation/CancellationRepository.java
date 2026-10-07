@@ -81,8 +81,35 @@ public class CancellationRepository {
 
     private final JdbcClient jdbc;
 
+    /**
+     * Autorización elevada para el alcance ALL_BANKS (Anexo F5).
+     *
+     * <p>Se lee del padrón y no de una propiedad: quién puede dar de baja alias
+     * de otras entidades es gobernanza de Banguat, cambia por entidad y tiene
+     * que quedar auditable en la base, no en el archivo de configuración de un
+     * despliegue.
+     */
+    private static final String ALLOWS_ALL_BANKS = """
+            SELECT allows_all_banks FROM participant_bank WHERE id = :bankId
+            """;
+
     public CancellationRepository(JdbcClient jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /**
+     * Si el banco tiene autorizado el alcance ALL_BANKS.
+     *
+     * <p>Un banco que no esté en el padrón devuelve false y no una excepción: a
+     * efectos de esta decisión, no estar autorizado y no existir llevan al mismo
+     * rechazo, y el llamador ya falló antes si el BIC no estaba.
+     */
+    public boolean allowsAllBanks(int bankId) {
+        return jdbc.sql(ALLOWS_ALL_BANKS)
+                .param("bankId", bankId)
+                .query(Boolean.class)
+                .optional()
+                .orElse(false);
     }
 
     public Optional<Registration> byUuid(String aliasUuid) {

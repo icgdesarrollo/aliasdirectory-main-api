@@ -16,7 +16,8 @@ import java.util.List;
  * (regla T-8): un texto de error termina en la pantalla del agente, en el
  * registro del navegador y a veces en una captura pegada en un ticket.
  */
-@RestControllerAdvice(assignableTypes = {PortalController.class, PortalMeController.class})
+@RestControllerAdvice(assignableTypes = {PortalController.class, PortalMeController.class,
+        AdminController.class, AuditController.class})
 public class PortalErrorHandler {
 
     private static final Logger log = LoggerFactory.getLogger(PortalErrorHandler.class);

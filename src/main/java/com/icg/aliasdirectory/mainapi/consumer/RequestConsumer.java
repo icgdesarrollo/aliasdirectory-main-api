@@ -159,6 +159,12 @@ public class RequestConsumer {
             // existe es distinto de una lista vacia.
             log.info("consulta por uuid sin resultado: banco={}", bic);
             return error(ResponseCode.UUID_NOT_FOUND, e.getMessage());
+        } catch (CancellationService.ScopeNotAuthorizedException e) {
+            // El banco existe y el mensaje es valido; lo que falta es la
+            // autorizacion elevada del Anexo F5 para dar de baja alias de otras
+            // entidades. Es 403 y no 400: la solicitud esta bien formada.
+            log.warn("alcance no autorizado: banco={} operacion={}", bic, operation);
+            return error(ResponseCode.FORBIDDEN_SCOPE, e.getMessage());
         } catch (CancellationService.RegistrationNotFoundException e) {
             log.info("baja sobre registro inexistente: banco={}", bic);
             return error(ResponseCode.CANCELLATION_NOT_FOUND, e.getMessage());

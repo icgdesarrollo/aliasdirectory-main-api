@@ -221,7 +221,7 @@ public class DeactivationService {
         for (int i = 0; i < rows.size(); i++) {
             var row = rows.get(i);
             views.add(new PortalDto.CancellationView(
-                    row.id(), row.aliasUuid(), AliasMask.of(aliases.get(i)), row.bic(),
+                    row.id(), row.aliasUuid(), Mask.lastFour(aliases.get(i)), row.bic(),
                     row.bankName(), RequestStatus.of(row.status()), row.reason(),
                     row.requestedBy(),
                     DATE.format(row.requestedAt().toInstant()), row.resolvedBy(),
