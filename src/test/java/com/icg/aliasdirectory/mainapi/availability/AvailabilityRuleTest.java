@@ -101,29 +101,63 @@ class AvailabilityRuleTest {
         assertThat(r.reason()).contains(Reason.ACTIVE_SAME_BANK_DIFF_DPI);
     }
 
+    /** Los perfiles de respuesta que llevan un Rsn.Prtry. */
+    private static final List<String> PERFILES_ACMT024 = List.of(
+            "esquemas/perfiles/acmt024-disponibilidad-registro.xsd",
+            "esquemas/perfiles/acmt024-disponibilidad-resolucion.xsd",
+            "esquemas/perfiles/acmt024-resolucion.xsd");
+
     @Test
-    @DisplayName("cada Reason está en la enumeración del XSD, y al revés")
-    void elEnumYElEsquemaNoSeSeparan() throws Exception {
+    @DisplayName("cada Reason está declarado en icg.001, que es el esquema que los lleva todos")
+    void ningunReasonSeQuedaSinEsquema() throws Exception {
         // Si alguien agrega un valor a Reason y no al XSD, la respuesta deja de
         // validar recién en producción, contra un banco. Esto lo detecta en el
         // build, leyendo el esquema de verdad y no una lista copiada aquí.
+        //
+        // El esquema de referencia es icg.001 y no un perfil de acmt.024: los
+        // motivos ya no salen de un solo sitio. ACTIVE_SAME_ACCOUNT lo decide el
+        // alta (RegistrationService) y viaja en la respuesta propia; los otros
+        // cuatro salen de AvailabilityRule y viajan en la acmt.024. icg.001 es
+        // el único que los declara todos.
+        assertThat(motivosDe("esquemas/icg/icg.001.xsd")).isEqualTo(reasons());
+    }
+
+    @Test
+    @DisplayName("ningún perfil de acmt.024 declara un motivo que no exista en Reason")
+    void losPerfilesNoInventanMotivos() throws Exception {
+        // La otra dirección, y la que un perfil SÍ debe cumplir: estrechar, nunca
+        // ensanchar. Un perfil que declara un valor que el código no produce es
+        // un contrato que promete algo que nadie manda; uno que declara un valor
+        // que ya no existe en Reason es un resto de un cambio a medias.
+        //
+        // No se exige la igualdad, a propósito: cada perfil declara sólo los
+        // motivos que ESA respuesta puede llevar. Disponibilidad de registro no
+        // devuelve ACTIVE_SAME_ACCOUNT, y agregárselo para que cuadre una prueba
+        // sería ensanchar el contrato con los bancos por comodidad del build.
+        for (String perfil : PERFILES_ACMT024) {
+            assertThat(motivosDe(perfil))
+                    .as("motivos declarados en %s", perfil)
+                    .isSubsetOf(reasons());
+        }
+    }
+
+    private static java.util.Set<String> reasons() {
+        return java.util.Arrays.stream(Reason.values())
+                .map(Enum::name)
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    private static java.util.Set<String> motivosDe(String recurso) throws Exception {
         String xsd;
-        try (var in = getClass().getClassLoader()
-                .getResourceAsStream("esquemas/perfiles/acmt024-disponibilidad-registro.xsd")) {
-            assertThat(in).as("el perfil de respuesta tiene que estar en el classpath").isNotNull();
+        try (var in = AvailabilityRuleTest.class.getClassLoader()
+                .getResourceAsStream(recurso)) {
+            assertThat(in).as("%s tiene que estar en el classpath", recurso).isNotNull();
             xsd = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
         }
-
-        var enElXsd = java.util.regex.Pattern
+        return java.util.regex.Pattern
                 .compile("<xs:enumeration value=\"(ACTIVE_[A-Z_]+|QUARANTINE)\"/>")
                 .matcher(xsd).results()
                 .map(r -> r.group(1))
                 .collect(java.util.stream.Collectors.toSet());
-
-        var enElEnum = java.util.Arrays.stream(Reason.values())
-                .map(Enum::name)
-                .collect(java.util.stream.Collectors.toSet());
-
-        assertThat(enElEnum).isEqualTo(enElXsd);
     }
 }

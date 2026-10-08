@@ -16,6 +16,8 @@ import com.icg.aliasdirectory.messaging.iso.acmt024.ProxyAccountType1Choice;
 import com.icg.aliasdirectory.messaging.iso.acmt024.VerificationReason1Choice;
 import com.icg.aliasdirectory.messaging.iso.acmt024.VerificationReport5;
 import com.icg.aliasdirectory.mainapi.integrity.RegistryVerifier;
+import com.icg.aliasdirectory.mainapi.audit.ResolutionAuditEvent;
+import com.icg.aliasdirectory.mainapi.audit.ResolutionAuditPublisher;
 import com.icg.aliasdirectory.messaging.serialization.MessageSerializer;
 
 import org.slf4j.Logger;
@@ -31,6 +33,8 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.GregorianCalendar;
+import java.util.List;
+import java.util.UUID;
 
 /**
  * F1 · Disponibilidad de resolución (Anexo §4).
@@ -63,6 +67,7 @@ public class ResolutionAvailabilityService {
     private final MessageSerializer serializer;
     private final BlindIndex index;
     private final RegistryRepository registry;
+    private final java.util.Optional<ResolutionAuditPublisher> audit;
     private final String directoryBic;
     private final DatatypeFactory datatypeFactory;
 
@@ -79,10 +84,17 @@ public class ResolutionAvailabilityService {
     public ResolutionAvailabilityService(MessageSerializer serializer, BlindIndex index,
             RegistryRepository registry,
             java.util.Optional<RegistryVerifier> verifier,
+            java.util.Optional<ResolutionAuditPublisher> audit,
             @Value("${icg.directory.bic:ICGSGTGC}") String directoryBic) {
         this.serializer = serializer;
         this.index = index;
         this.registry = registry;
+        this.audit = audit;
+        // Deja constancia en el arranque de si esta instancia audita o no. Sin
+        // esto, un publicador ausente no se nota: las consultas responden igual
+        // y la bitacora simplemente no crece, que es el peor modo de fallar.
+        log.info("auditoria de consultas: {}",
+                audit.map(Object::toString).orElse("DESACTIVADA (sin publicador)"));
         this.verifier = verifier;
         this.directoryBic = directoryBic;
         try {
@@ -92,7 +104,7 @@ public class ResolutionAvailabilityService {
         }
     }
 
-    public byte[] handle(byte[] requestBody, String requestingBic) {
+    public byte[] handle(byte[] requestBody, String requestingBic, String amqpsQueue) {
         var doc = serializer.parse(requestBody,
                 com.icg.aliasdirectory.messaging.iso.acmt023.Document.class);
         var request = doc.getIdVrfctnReq();
@@ -101,8 +113,11 @@ public class ResolutionAvailabilityService {
         report.setAssgnmt(responseTo(requestingBic));
         report.setOrgnlAssgnmt(original(request.getAssgnmt()));
 
+        // Un evento de auditoría por cada Vrfctn, no uno por mensaje: la bitácora
+        // es por alias consultado, y este perfil admite varios en una llamada.
+        String msgId = request.getAssgnmt().getMsgId();
         for (IdentificationVerification5 query : request.getVrfctn()) {
-            report.getRpt().add(resolve(query, requestingBic));
+            report.getRpt().add(resolve(query, requestingBic, amqpsQueue, msgId));
         }
 
         var out = new Document();
@@ -111,7 +126,8 @@ public class ResolutionAvailabilityService {
     }
 
     private VerificationReport5 resolve(IdentificationVerification5 query,
-            String requestingBic) {
+            String requestingBic, String amqpsQueue, String msgId) {
+        long inicio = System.nanoTime();
         String alias = query.getPtyAndAcctId().getAcct().getPrxy().getId();
 
         byte[] aliasBidx = index.ofAlias(alias);
@@ -141,6 +157,24 @@ public class ResolutionAvailabilityService {
             rpt.setRsn(rsn);
         });
         decision.ownerBic().ifPresent(bic -> rpt.setUpdtdPtyAndAcctId(aliasOnly(alias, bic)));
+
+        // La auditoría va al final y FUERA del camino de la respuesta: si el KMS
+        // o el broker fallan, el publicador lo registra y la consulta responde
+        // igual. El EvtAlias se genera aquí aunque este perfil no lo devuelva:
+        // es la única forma de cruzar este evento con el log de acceso.
+        //
+        // Sin cliente originador: este perfil no trae Pty y por eso tampoco
+        // OrgtrCustId. Sin detalle: la respuesta no lleva IBAN ni cuenta, eso lo
+        // entrega F3. returned_records es 1 cuando se dijo en qué entidad está.
+        if (audit.isPresent()) {
+            audit.get().publish(UUID.randomUUID().toString(),
+                    ResolutionAuditEvent.DISP_RESOLUCION, alias, aliasBidx, null,
+                    requestingBic, amqpsQueue, msgId, null, decision.vrfctn(),
+                    decision.reason().map(Enum::name).orElse(null), 200,
+                    decision.ownerBic().isPresent() ? 1 : 0,
+                    (System.nanoTime() - inicio) / 1_000_000L, null, List.of());
+        }
+
         return rpt;
     }
 

@@ -1,5 +1,7 @@
 package com.icg.aliasdirectory.mainapi.resolution;
 
+import com.icg.aliasdirectory.mainapi.audit.ResolutionAuditEvent;
+import com.icg.aliasdirectory.mainapi.audit.ResolutionAuditPublisher;
 import com.icg.aliasdirectory.mainapi.availability.BlindIndex;
 import com.icg.aliasdirectory.mainapi.availability.Reason;
 import com.icg.aliasdirectory.mainapi.availability.RegistrationAvailabilityService;
@@ -88,6 +90,7 @@ public class ResolutionService {
     private final ResolutionRepository registry;
     private final TransitClient kms;
     private final Optional<RegistryVerifier> verifier;
+    private final Optional<ResolutionAuditPublisher> audit;
     private final String encryptionKey;
     private final String directoryBic;
     private final DatatypeFactory datatypeFactory;
@@ -95,6 +98,7 @@ public class ResolutionService {
     public ResolutionService(MessageSerializer serializer, BlindIndex index,
             ResolutionRepository registry, TransitClient kms,
             Optional<RegistryVerifier> verifier,
+            Optional<ResolutionAuditPublisher> audit,
             @Value("${icg.kms.encryption-key}") String encryptionKey,
             @Value("${icg.directory.bic:ICGSGTGC}") String directoryBic) {
         this.serializer = serializer;
@@ -102,6 +106,12 @@ public class ResolutionService {
         this.registry = registry;
         this.kms = kms;
         this.verifier = verifier;
+        this.audit = audit;
+        // Deja constancia en el arranque de si esta instancia audita o no. Sin
+        // esto, un publicador ausente no se nota: las consultas responden igual
+        // y la bitacora simplemente no crece, que es el peor modo de fallar.
+        log.info("auditoria de consultas: {}",
+                audit.map(Object::toString).orElse("DESACTIVADA (sin publicador)"));
         this.encryptionKey = encryptionKey;
         this.directoryBic = directoryBic;
         try {
@@ -115,7 +125,8 @@ public class ResolutionService {
     public record Response(byte[] body, int httpStatus) {
     }
 
-    public Response handle(byte[] requestBody, String requestingBic) {
+    public Response handle(byte[] requestBody, String requestingBic, String amqpsQueue) {
+        long inicio = System.nanoTime();
         var request = serializer.parse(requestBody,
                 com.icg.aliasdirectory.messaging.iso.acmt023.Document.class).getIdVrfctnReq();
 
@@ -148,20 +159,58 @@ public class ResolutionService {
 
         String evtAlias = UUID.randomUUID().toString();
 
+        Response respuesta;
+        Reason motivo = null;
+        List<ResolutionAuditEvent.Detail> detalle = List.of();
+
         if (rows.isEmpty()) {
             // No existe. Sin motivo: los motivos explican por qué un alias que
             // existe no se puede usar, no la ausencia.
-            return report(request, requestingBic, query, evtAlias, List.of(), null,
+            respuesta = report(request, requestingBic, query, evtAlias, List.of(), null,
                     ResponseCode.RESOLUTION_NOT_FOUND);
-        }
-        if (active.isEmpty()) {
+        } else if (active.isEmpty()) {
             // Existe y no es usable: todos sus registros están en cuarentena.
-            return report(request, requestingBic, query, evtAlias, List.of(), Reason.QUARANTINE,
+            motivo = Reason.QUARANTINE;
+            respuesta = report(request, requestingBic, query, evtAlias, List.of(), motivo,
                     ResponseCode.RESOLUTION_BLOCKED);
+        } else {
+            detalle = detailOf(active);
+            respuesta = report(request, requestingBic, query, evtAlias, decrypt(active), null,
+                    ResponseCode.RESOLUTION_OK);
         }
-        return report(request, requestingBic, query, evtAlias, decrypt(active), null,
-                ResponseCode.RESOLUTION_OK);
+
+        // La auditoría va al final y FUERA del camino de la respuesta: el evento
+        // se publica a una cola y lo persiste otro consumidor. Si algo falla aquí,
+        // el publicador lo registra y la resolución responde igual; hay una
+        // transferencia esperando y un hueco en la bitácora es preferible a una
+        // transferencia que no se puede hacer.
+        if (audit.isPresent()) {
+            audit.get().publish(evtAlias, ResolutionAuditEvent.RESOLUCION,
+                    alias, aliasBidx, originatorCustomerId, requestingBic, amqpsQueue,
+                    request.getAssgnmt().getMsgId(), null,
+                    respuesta.httpStatus() == ResponseCode.RESOLUTION_OK.httpStatus(),
+                    motivo == null ? null : motivo.name(),
+                    respuesta.httpStatus(), detalle.size(),
+                    (System.nanoTime() - inicio) / 1_000_000L, null, detalle);
+        }
+
+        return respuesta;
     }
+
+    /** Lo que se devolvió, para resolution_event_detail. */
+    private static List<ResolutionAuditEvent.Detail> detailOf(
+            List<ResolutionRepository.EncryptedRow> rows) {
+        var detalle = new java.util.ArrayList<ResolutionAuditEvent.Detail>(rows.size());
+        for (int i = 0; i < rows.size(); i++) {
+            var r = rows.get(i);
+            // La posición es 1..n, la del arreglo UpdtdPtyAndAcctId del mensaje,
+            // no el índice de la lista.
+            detalle.add(new ResolutionAuditEvent.Detail(
+                    i + 1, r.registrationId(), r.bankId()));
+        }
+        return detalle;
+    }
+
 
     /**
      * Descifra IBAN, tipo y moneda de todas las filas en UNA llamada al KMS.

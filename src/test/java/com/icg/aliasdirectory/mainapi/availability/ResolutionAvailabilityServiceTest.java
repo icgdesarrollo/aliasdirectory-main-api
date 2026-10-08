@@ -22,6 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ResolutionAvailabilityServiceTest {
 
     private static final String YO = "GTCOGTGC";
+    /** La cola por la que Dispatch entrega: va a la bitácora de consultas. */
+    private static final String COLA = "alias.requests.gtcogtgc";
     private static final String DUENO = "INDLGTGC";
     private static final String ALIAS = "+50244444444";
 
@@ -90,9 +92,9 @@ class ResolutionAvailabilityServiceTest {
                 registryReturning(Map.of(ALIAS, List.of(new AliasRegistration(DUENO, true))), idx),
                 // Sin KMS no existe el verificador de integridad (H-57); estas
                 // pruebas ejercitan la regla de resolubilidad, no el sello.
-                java.util.Optional.empty(), "ICGSGTGC");
+                java.util.Optional.empty(), java.util.Optional.empty(), "ICGSGTGC");
 
-        byte[] response = servicio.handle(request, YO);
+        byte[] response = servicio.handle(request, YO, COLA);
 
         assertThat(validator.validate(response, Profile.RESOLUTION_AVAILABILITY_RESPONSE))
                 .as("la respuesta tiene que validar contra el perfil").isEmpty();
@@ -110,9 +112,9 @@ class ResolutionAvailabilityServiceTest {
                 registryReturning(Map.of(ALIAS, List.of(new AliasRegistration(DUENO, false))), idx),
                 // Sin KMS no existe el verificador de integridad (H-57); estas
                 // pruebas ejercitan la regla de resolubilidad, no el sello.
-                java.util.Optional.empty(), "ICGSGTGC");
+                java.util.Optional.empty(), java.util.Optional.empty(), "ICGSGTGC");
 
-        byte[] response = servicio.handle(request, YO);
+        byte[] response = servicio.handle(request, YO, COLA);
 
         assertThat(validator.validate(response, Profile.RESOLUTION_AVAILABILITY_RESPONSE))
                 .isEmpty();
@@ -129,10 +131,10 @@ class ResolutionAvailabilityServiceTest {
                 registryReturning(Map.of(ALIAS, List.of(new AliasRegistration(DUENO, true))), idx),
                 // Sin KMS no existe el verificador de integridad (H-57); estas
                 // pruebas ejercitan la regla de resolubilidad, no el sello.
-                java.util.Optional.empty(), "ICGSGTGC");
+                java.util.Optional.empty(), java.util.Optional.empty(), "ICGSGTGC");
 
         // Quién resuelve a qué cuenta lo contesta F3, que se audita como tal.
-        assertThat(withoutPrefixes(servicio.handle(request, YO)))
+        assertThat(withoutPrefixes(servicio.handle(request, YO, COLA)))
                 .doesNotContain("IBAN")
                 .doesNotContain("<Ccy>")
                 .doesNotContain("<Pty>");

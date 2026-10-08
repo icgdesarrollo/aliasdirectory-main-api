@@ -90,6 +90,62 @@ public class RegistryWriteRepository {
              WHERE current_alias_id = :aliasId
             """;
 
+    /**
+     * ¿Este cliente ya tiene un alias vigente en este banco? (regla V1.1.5)
+     *
+     * <p>Es la más estricta de las dos: un cliente registra un alias y ninguno
+     * más en esa entidad, aunque sea contra otra cuenta suya. Fuera del alcance
+     * de la v1.0.
+     *
+     * <p>No se entra por {@code holder_bank_id}, que es lo que el único usa,
+     * porque esa fila puede no existir todavía cuando hay que preguntar: el
+     * upsert ocurre después.
+     *
+     * <p>El OR no es por comodidad. {@code holder_bank} tiene DOS únicos —
+     * {@code uk_customer_bank (bank_id, customer_id_bidx)} y
+     * {@code uk_holder_per_bank (bank_id, holder_id)}— y el upsert resuelve a una
+     * fila existente por cualquiera de los dos. Preguntando sólo por el IdCliente,
+     * un alta con el mismo DPI y OTRO IdCliente no encontraría nada aquí, pasaría
+     * la validación y reventaría al insertar: el {@code active_holder_bank_id} ya
+     * estaría ocupado por la fila a la que el upsert la mandó. Eso es un 500 donde
+     * corresponde un 409.
+     */
+    private static final String CUSTOMER_ACTIVE_REGISTRATION = """
+            SELECT r.regn_id
+              FROM alias_registration r
+              JOIN holder_bank hb ON hb.id = r.active_holder_bank_id
+              JOIN holder       h  ON h.id  = hb.holder_id
+             WHERE hb.bank_id = :bankId
+               AND (hb.customer_id_bidx = :customerIdBidx OR h.dpi_bidx = :dpiBidx)
+             LIMIT 1
+            """;
+
+    /**
+     * ¿Esta cuenta ya sostiene un alias vigente? (regla V1.1.4)
+     *
+     * <p>Se entra por {@code (bank_id, iban_bidx)} y no por {@code account_id}
+     * porque en el momento de preguntar la cuenta puede no existir todavía: el
+     * upsert ocurre después. Crearla antes sólo para poder preguntar dejaría una
+     * cuenta sembrada por un alta que se va a rechazar.
+     *
+     * <p>Se consulta {@code active_account_id}, la columna generada, por la misma
+     * razón que {@link #ACTIVE_LINK} consulta {@code current_alias_id}: es la que
+     * tiene el índice único que impone la regla, así que la consulta y la
+     * restricción no pueden desincronizarse.
+     *
+     * <p>Devuelve el {@code regn_id} y no un booleano para poder decir en el log
+     * cuál registro está ocupando la cuenta. El RegnId es un identificador de
+     * trámite del propio banco, no un dato del padrón: no lo alcanza la regla T-8.
+     */
+    private static final String ACCOUNT_ACTIVE_REGISTRATION = """
+            SELECT r.regn_id
+              FROM alias_registration r
+              JOIN account a ON a.id = r.active_account_id
+             WHERE a.bank_id   = :bankId
+               AND a.iban_bidx = :ibanBidx
+             LIMIT 1
+            """;
+
     private static final String INSERT_LINK = """
             INSERT INTO alias_link (alias_id, holder_id)
             VALUES (:aliasId, :holderId)
@@ -228,6 +284,24 @@ public class RegistryWriteRepository {
         return jdbc.sql(ACTIVE_LINK).param("aliasId", aliasId)
                 .query((rs, fila) -> new Link(rs.getLong("id"), rs.getLong("holder_id")))
                 .optional();
+    }
+
+    /** El RegnId del alias vigente de este cliente en este banco, si lo tiene. */
+    public Optional<String> customerActiveRegistration(int bankId, byte[] customerIdBidx,
+            byte[] dpiBidx) {
+        return jdbc.sql(CUSTOMER_ACTIVE_REGISTRATION)
+                .param("bankId", bankId)
+                .param("customerIdBidx", customerIdBidx)
+                .param("dpiBidx", dpiBidx)
+                .query(String.class).optional();
+    }
+
+    /** El RegnId del registro que ocupa la cuenta, si alguno la ocupa. */
+    public Optional<String> accountActiveRegistration(int bankId, byte[] ibanBidx) {
+        return jdbc.sql(ACCOUNT_ACTIVE_REGISTRATION)
+                .param("bankId", bankId)
+                .param("ibanBidx", ibanBidx)
+                .query(String.class).optional();
     }
 
     public long insertLink(long aliasId, long holderId) {

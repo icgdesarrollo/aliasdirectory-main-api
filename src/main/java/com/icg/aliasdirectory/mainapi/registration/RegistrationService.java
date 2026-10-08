@@ -2,6 +2,7 @@ package com.icg.aliasdirectory.mainapi.registration;
 
 import com.icg.aliasdirectory.mainapi.availability.BlindIndex;
 import com.icg.aliasdirectory.mainapi.availability.Normalizer;
+import com.icg.aliasdirectory.mainapi.availability.Reason;
 import com.icg.aliasdirectory.mainapi.availability.RegistryRepository;
 import com.icg.aliasdirectory.mainapi.availability.AvailabilityRule;
 import com.icg.aliasdirectory.messaging.icg.schema.Document;
@@ -90,23 +91,69 @@ public class RegistrationService {
 
         byte[] aliasBidx = index.ofAlias(alias);
         byte[] dpiBidx = index.ofDpi(dpi);
+        byte[] ibanBidx = index.ofIban(iban);
+        byte[] customerIdBidx = index.ofCustomerId(
+                Normalizer.customerId(data.customerId()));
 
         var actives = registry.activeRegistrations(ALIAS_TYPE, aliasBidx, dpiBidx);
         var decision = AvailabilityRule.decide(actives, registeringBic);
 
-        // vrfctn=true en el contexto de registro significa «ya existe un registro
-        // ACTIVO para este alias»: está tomado y el alta se rechaza. La misma
-        // bandera en resolución significa lo contrario, y por eso no se abrevia.
-        if (decision.vrfctn()) {
+        // Lo que rechaza el alta es el MOTIVO, no Vrfctn.
+        //
+        // Los dos campos no dicen lo mismo, y confundirlos rompía el multibanco:
+        // Vrfctn responde «¿existe un registro ACTIVO de este alias?» y Rsn sólo
+        // aparece cuando hay un impedimento para que ESTE banco lo registre. El
+        // caso multibanco normal —el alias ya activo en otra entidad, a nombre
+        // del MISMO DPI— devuelve Vrfctn=true SIN motivo justamente porque este
+        // banco sí puede registrarlo; es lo que dice AvailabilityRule en su
+        // javadoc y lo que el directorio existe para permitir (F3 devuelve una
+        // lista multibanco).
+        //
+        // Rechazando por Vrfctn, ese alta salía con un 409 sin Rsn y el alias
+        // quedaba atrapado en la primera entidad que lo registrara.
+        if (decision.reason().isPresent()) {
             log.info("registro rechazado: banco={} msgId={} motivo={}",
-                    registeringBic, data.msgIdOrigen(),
-                    decision.reason().map(Enum::name).orElse("-"));
-            return responseBuilder.rejected(request, decision.reason().orElse(null),
+                    registeringBic, data.msgIdOrigen(), decision.reason().get());
+            return responseBuilder.rejected(request, decision.reason().get(),
                     decision.reasonBic().orElse(null));
         }
 
+        // Un cliente sostiene un solo alias vigente en cada banco (V1.1.5). Va
+        // antes que la comprobación de cuenta porque es la más estricta: el caso
+        // que de verdad se va a dar es éste, y así el log nombra el impedimento
+        // real en vez de uno que también se cumple de rebote.
+        var clienteOcupado = writeRepository.customerActiveRegistration(
+                bankId, customerIdBidx, dpiBidx);
+        if (clienteOcupado.isPresent()) {
+            log.info("registro rechazado: banco={} msgId={} motivo={} causa=cliente regnId={}",
+                    registeringBic, data.msgIdOrigen(),
+                    Reason.ACTIVE_SAME_ACCOUNT, clienteOcupado.get());
+            return responseBuilder.rejected(request, Reason.ACTIVE_SAME_ACCOUNT, null);
+        }
+
+        // Una cuenta sostiene un solo alias vigente (V1.1.4). No lo decide
+        // AvailabilityRule a propósito: esa regla razona sobre los registros DEL
+        // ALIAS, y la cuenta no aparece en ellos. Son dos preguntas distintas y
+        // mezclarlas obligaría a pasarle a la regla un dato que no usa para nada
+        // más.
+        //
+        // Va después del rechazo por alias tomado porque ese es el impedimento
+        // que el Anexo nombra y el que el banco espera primero. Y va antes de
+        // registrar() para que un alta rechazada no deje sembrados el titular, el
+        // alias ni la cuenta: el rollback los quitaría igual, pero gastando las
+        // llamadas de cifrado al KMS.
+        var ocupante = writeRepository.accountActiveRegistration(bankId, ibanBidx);
+        if (ocupante.isPresent()) {
+            log.info("registro rechazado: banco={} msgId={} motivo={} causa=cuenta regnId={}",
+                    registeringBic, data.msgIdOrigen(),
+                    Reason.ACTIVE_SAME_ACCOUNT, ocupante.get());
+            // Sin BIC en AddtlInf: la cuenta es del banco que pregunta, así que no
+            // hay otra entidad que nombrar.
+            return responseBuilder.rejected(request, Reason.ACTIVE_SAME_ACCOUNT, null);
+        }
+
         var registrado = registrar.register(data, alias, dpi, iban,
-                aliasBidx, dpiBidx, bankId);
+                aliasBidx, dpiBidx, ibanBidx, customerIdBidx, bankId);
 
         // Se registra el RegnId y el MsgId, que son identificadores del trámite, y
         // nunca el alias ni el DPI (regla T-8). Con el RegnId se rastrea todo lo

@@ -1,6 +1,8 @@
 package com.icg.aliasdirectory.mainapi.cancellation;
 
 import com.icg.aliasdirectory.mainapi.integrity.IntegritySeal;
+import com.icg.aliasdirectory.mainapi.outbox.RegistryEventRepository;
+import com.icg.aliasdirectory.mainapi.outbox.RegistryOperation;
 import com.icg.aliasdirectory.mainapi.registration.RegistryWriteRepository;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -33,12 +35,14 @@ public class AliasDeactivator {
     private final CancellationRepository cancellations;
     private final RegistryWriteRepository registry;
     private final IntegritySeal seal;
+    private final RegistryEventRepository outbox;
 
     public AliasDeactivator(CancellationRepository cancellations, RegistryWriteRepository registry,
-            IntegritySeal seal) {
+            IntegritySeal seal, RegistryEventRepository outbox) {
         this.cancellations = cancellations;
         this.registry = registry;
         this.seal = seal;
+        this.outbox = outbox;
     }
 
     /**
@@ -85,6 +89,24 @@ public class AliasDeactivator {
                 registration.dpiBidx(), registration.ibanEnc());
         var fingerprint = seal.compute(fields);
         registry.seal(registration.id(), fingerprint.bytes(), fingerprint.version());
+
+        // La bandeja de salida, en la misma transacción que el cambio (PTRAD-843).
+        // Como este método es el único camino de las bajas —ISO 20022 y portal—,
+        // el evento se escribe aquí una sola vez y las dos entradas lo heredan.
+        //
+        // El banco del evento es el DUEÑO del registro, no el que pidió la baja:
+        // en ALL_BANKS son distintos, y lo que hay que invalidar es el shard de
+        // quien tenía el alias.
+        boolean dadoDeBaja = "INACTIVO".equals(outcome.status());
+        outbox.append(registration.aliasId(), registration.bankId(), registration.id(),
+                dadoDeBaja ? RegistryOperation.BAJA : RegistryOperation.BLOQUEO,
+                // affects_routing sólo cuando el alias SALE del banco. Un registro
+                // BLOQUEADO sigue siendo de esa entidad y el shard tiene que
+                // conocerlo para responder QUARANTINE, así que el índice global de
+                // ruteo no cambia; si se marcara, se reharía el índice en cada
+                // cuarentena sin que el conjunto de bancos se hubiera movido.
+                dadoDeBaja,
+                msgId);
 
         return outcome;
     }

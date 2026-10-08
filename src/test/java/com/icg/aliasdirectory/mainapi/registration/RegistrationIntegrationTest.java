@@ -152,13 +152,13 @@ class RegistrationIntegrationTest {
     @DisplayName("registrar dos veces el mismo alias en el mismo banco lo rechaza")
     void aliasYaRegistrado() {
         String alias = "+50244442222";
-        String dpi = "2987654321098";
+        String dpi = "1122334455667";
         servicio.handle(request(BANCO, "PRXREQ-ALTA-2", alias, dpi, "CLI-0002",
-                "GT18BAGU01010000000000222222"), BANCO);
+                "GT37BAGU01010000000000222222"), BANCO);
 
         var second = servicio.handle(
                 request(BANCO, "PRXREQ-ALTA-3", alias, dpi, "CLI-0002",
-                        "GT18BAGU01010000000000222222"), BANCO);
+                        "GT37BAGU01010000000000222222"), BANCO);
 
         // 409 y no 201: no se creó nada. Un 2xx sobre un alta rechazada le dice al
         // banco que el alias es suyo, y hay integraciones que sólo miran el código.
@@ -171,12 +171,12 @@ class RegistrationIntegrationTest {
     @DisplayName("el mismo alias a nombre de otro DPI, desde otro banco, se rechaza")
     void aliasDeOtraPersona() {
         String alias = "+50244443333";
-        servicio.handle(request(BANCO, "PRXREQ-ALTA-4", alias, "1345986654379", "CLI-0003",
-                "GT18BAGU01010000000000333333"), BANCO);
+        servicio.handle(request(BANCO, "PRXREQ-ALTA-4", alias, "9012345678901", "CLI-0003",
+                "GT56BAGU01010000000000333333"), BANCO);
 
         var second = servicio.handle(
-                request(OTRO_BANCO, "PRXREQ-ALTA-5", alias, "2987654321098", "CLI-0004",
-                        "GT18INDL01010000000000333333"), OTRO_BANCO);
+                request(OTRO_BANCO, "PRXREQ-ALTA-5", alias, "0123456789012", "CLI-0004",
+                        "GT52INDL01010000000000333333"), OTRO_BANCO);
 
         assertThat(second.httpStatus()).isEqualTo(409);
         String xml = new String(second.body(), StandardCharsets.UTF_8);
@@ -187,7 +187,144 @@ class RegistrationIntegrationTest {
         // AddtlInf viniera vacío.
         assertThat(xml).contains("<AddtlInf>Registrado en " + BANCO + "</AddtlInf>");
         // Ni el alias ni el DPI del titular original salen de vuelta (regla T-8).
-        assertThat(xml).doesNotContain("1345986654379").doesNotContain("2987654321098");
+        assertThat(xml).doesNotContain("9012345678901").doesNotContain("0123456789012");
+    }
+
+    @Test
+    @DisplayName("el mismo alias se registra en otro banco para el mismo DPI: multibanco")
+    void multibanco() throws SQLException {
+        // Es la razón de ser del directorio: F3 devuelve una LISTA de bancos para
+        // un alias. Si esto no pasara, el alias quedaría atrapado en la primera
+        // entidad que lo registrara.
+        String alias = "+50244443344";
+        String dpi = "2233445566778";
+        servicio.handle(request(BANCO, "PRXREQ-MB-1", alias, dpi, "CLI-0010",
+                "GT78BAGU01010000000000101010"), BANCO);
+
+        var second = servicio.handle(request(OTRO_BANCO, "PRXREQ-MB-2", alias, dpi,
+                "CLI-0011", "GT74INDL01010000000000101010"), OTRO_BANCO);
+
+        assertThat(second.httpStatus())
+                .as("el multibanco con el mismo DPI es un alta válida, no un conflicto")
+                .isEqualTo(201);
+        assertThat(new String(second.body(), StandardCharsets.UTF_8))
+                .contains("ACTV").doesNotContain("RJCT");
+
+        byte[] huella = index.ofAlias(alias);
+        try (Connection c = IntegrationMySql.connectAs(
+                IntegrationMySql.ROOT_USER, IntegrationMySql.ROOT_PASSWORD)) {
+            // Un solo alias y un solo vínculo: es el mismo número de la misma
+            // persona. Lo que se duplica es el registro, uno por entidad.
+            assertThat(anInteger(c, "SELECT COUNT(*) FROM alias WHERE value_bidx = ?", huella))
+                    .as("el alias no se duplica").isEqualTo(1);
+            assertThat(anInteger(c, """
+                    SELECT COUNT(*) FROM alias_link l
+                      JOIN alias a ON a.id = l.alias_id
+                     WHERE a.value_bidx = ? AND l.released_at IS NULL
+                    """, huella))
+                    .as("un solo vínculo vigente: el alias es de una sola persona").isEqualTo(1);
+            assertThat(anInteger(c, """
+                    SELECT COUNT(*) FROM alias_registration r
+                      JOIN alias a ON a.id = r.alias_id
+                     WHERE a.value_bidx = ? AND r.status = 'ACTIVO'
+                    """, huella))
+                    .as("un registro por entidad").isEqualTo(2);
+        }
+    }
+
+    @Test
+    @DisplayName("un cliente no admite un segundo alias en el mismo banco, ni en otra cuenta")
+    void clienteYaTieneAliasEnElBanco() throws SQLException {
+        String segundoAlias = "+50244448888";
+        servicio.handle(request(BANCO, "PRXREQ-ALTA-10", "+50244449999", "6789012345678",
+                "CLI-0008", "GT54BAGU01010000000000888888"), BANCO);
+
+        // MISMO cliente, OTRA cuenta. La cuenta distinta es deliberada: con la
+        // misma, el rechazo podría venir de la V1.1.4 y esta prueba no
+        // distinguiría cuál de las dos reglas actuó.
+        var second = servicio.handle(request(BANCO, "PRXREQ-ALTA-11", segundoAlias,
+                "6789012345678", "CLI-0008", "GT30BAGU01010000000000889999"), BANCO);
+
+        assertThat(second.httpStatus()).isEqualTo(409);
+        String xml = new String(second.body(), StandardCharsets.UTF_8);
+        assertThat(xml).contains("RJCT").contains("ACTIVE_SAME_ACCOUNT");
+
+        try (Connection c = IntegrationMySql.connectAs(
+                IntegrationMySql.ROOT_USER, IntegrationMySql.ROOT_PASSWORD)) {
+            assertThat(anInteger(c, "SELECT COUNT(*) FROM alias WHERE value_bidx = ?",
+                    index.ofAlias(segundoAlias)))
+                    .as("un alta rechazada no crea el alias")
+                    .isZero();
+            // Tampoco la cuenta nueva, que no llegó a existir.
+            assertThat(anInteger(c, "SELECT COUNT(*) FROM account WHERE iban_bidx = ?",
+                    index.ofIban("GT30BAGU01010000000000889999")))
+                    .as("un alta rechazada no crea la cuenta")
+                    .isZero();
+        }
+    }
+
+    @Test
+    @DisplayName("una cuenta no admite un segundo alias mientras el primero esté vigente")
+    void cuentaYaSostieneUnAlias() throws SQLException {
+        String iban = "GT75BAGU01010000000000444444";
+        String segundoAlias = "+50244445555";
+        servicio.handle(request(BANCO, "PRXREQ-ALTA-6", "+50244444444", "3456789012345",
+                "CLI-0005", iban), BANCO);
+
+        // OTRO cliente del mismo banco contra la MISMA cuenta: el caso de la
+        // cuenta mancomunada. Tiene que ser otro cliente, porque con el mismo lo
+        // frenaría la V1.1.5 y esta prueba dejaría de probar lo que dice probar.
+        var second = servicio.handle(request(BANCO, "PRXREQ-ALTA-7", segundoAlias,
+                "5678901234567", "CLI-0007", iban), BANCO);
+
+        assertThat(second.httpStatus()).isEqualTo(409);
+        String xml = new String(second.body(), StandardCharsets.UTF_8);
+        assertThat(xml).contains("RJCT").contains("ACTIVE_SAME_ACCOUNT");
+        // Sin AddtlInf: la cuenta es del banco que pregunta y no hay otra entidad
+        // que nombrar. Mandar un BIC aquí sería decirle al banco algo que ya sabe.
+        assertThat(xml).doesNotContain("AddtlInf");
+
+        // El rechazo no deja nada sembrado. Se comprueba sobre el alias nuevo, que
+        // no debería ni existir: si la comprobación se hiciera dentro de
+        // register(), la fila de alias quedaría creada y sólo el rollback la
+        // quitaría.
+        try (Connection c = IntegrationMySql.connectAs(
+                IntegrationMySql.ROOT_USER, IntegrationMySql.ROOT_PASSWORD)) {
+            assertThat(anInteger(c, "SELECT COUNT(*) FROM alias WHERE value_bidx = ?",
+                    index.ofAlias(segundoAlias)))
+                    .as("un alta rechazada no crea el alias")
+                    .isZero();
+        }
+    }
+
+    @Test
+    @DisplayName("la cuenta vuelve a admitir alias cuando el anterior queda INACTIVO")
+    void laCuentaSeLiberaAlQuedarInactivo() throws SQLException {
+        String iban = "GT94BAGU01010000000000555555";
+        String primero = "+50244446666";
+        servicio.handle(request(BANCO, "PRXREQ-ALTA-8", primero, "4567890123456",
+                "CLI-0006", iban), BANCO);
+
+        // La baja de verdad la hace F5; aquí basta con dejar el registro INACTIVO,
+        // que es lo único que la regla mira. BLOQUEADO no valdría: un alias en
+        // cuarentena todavía ocupa la cuenta.
+        try (Connection c = IntegrationMySql.connectAs(
+                IntegrationMySql.ROOT_USER, IntegrationMySql.ROOT_PASSWORD);
+                PreparedStatement p = prepare(c, """
+                        UPDATE alias_registration r
+                          JOIN alias a ON a.id = r.alias_id
+                           SET r.status = 'INACTIVO'
+                         WHERE a.value_bidx = ?
+                        """, index.ofAlias(primero))) {
+            assertThat(p.executeUpdate()).isEqualTo(1);
+        }
+
+        var second = servicio.handle(request(BANCO, "PRXREQ-ALTA-9", "+50244447777",
+                "4567890123456", "CLI-0006", iban), BANCO);
+
+        assertThat(second.httpStatus())
+                .as("con el alias anterior INACTIVO se liberan la cuenta y el cliente")
+                .isEqualTo(201);
     }
 
     @Test
@@ -198,16 +335,19 @@ class RegistrationIntegrationTest {
         // original— hacía que el alta y el rechazo de su reintento salieran con el
         // mismo identificador, y el banco que archive por MsgId pierde la primera,
         // que es justamente la que trae el RegnId.
-        String alias = "+50244445555";
-        byte[] request = request(BANCO, "PRXREQ-ALTA-6", alias, "1345986654379",
-                "CLI-0006", "GT18BAGU01010000000000666666");
+        // Identificadores propios: con la regla V1.1.5 compartir el IdCliente, el
+        // DPI o la cuenta con otra prueba la vuelve dependiente del orden, y JUnit
+        // no lo garantiza.
+        String alias = "+50244440000";
+        byte[] request = request(BANCO, "PRXREQ-ALTA-12", alias, "7890123456789",
+                "CLI-0009", "GT73BAGU01010000000000999999");
 
         String primera = msgId(servicio.handle(request, BANCO));
         String second = msgId(servicio.handle(request, BANCO));
 
         assertThat(primera).isNotEqualTo(second);
         // Y ninguno arrastra el MsgId de la solicitud dentro del suyo.
-        assertThat(primera).doesNotContain("PRXREQ-ALTA-6");
+        assertThat(primera).doesNotContain("PRXREQ-ALTA-12");
     }
 
     /** El MsgId de Assgnmt, que es el primero que aparece en la respuesta. */
@@ -234,7 +374,7 @@ class RegistrationIntegrationTest {
                     </Assgnmt>
                     <Prxy><Tp><Cd>SHID</Cd></Tp><Id>+50244444444</Id></Prxy>
                     <Acct>
-                      <Id><IBAN>GT18BAGU01010000000000999999</IBAN></Id>
+                      <Id><IBAN>GT73BAGU01010000000000999999</IBAN></Id>
                       <Tp><Cd>SVGS</Cd></Tp><Ccy>GTQ</Ccy>
                     </Acct>
                     <Ownr><Id><PrvtId>

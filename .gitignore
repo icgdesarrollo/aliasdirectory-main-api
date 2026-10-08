@@ -15,3 +15,33 @@ bin/
 .DS_Store
 
 .env
+
+# =============================================================================
+#  Lo que NO sube: nada de esto es el producto
+# =============================================================================
+
+# Configuracion de desarrollo local. No lleva secretos (los password son ${VAR}),
+# pero describe la maquina de quien la escribio, no el servicio.
+src/main/resources/application-local.yml
+
+# Manifiestos de despliegue. La fuente de verdad es icgdesarrollo/icg-manifests;
+# tenerlos aqui tambien garantiza que un dia digan cosas distintas.
+k8s/
+
+# Restos de trabajo
+_to_delete/
+_tmp_*
+*BK/
+*.bak
+
+# =============================================================================
+#  OJO: esto SI sube, aunque lo parezca
+# =============================================================================
+#  - src/main/resources/db/migration/*.sql  son las migraciones de Flyway. Son
+#    el esquema, no un script suelto: sin ellas la aplicacion no arranca.
+#  - src/main/resources/esquemas/**/*.xsd   es el contrato con los 20 bancos.
+#  - .github/workflows/*.yml                es el pipeline.
+#  - application.properties, pom.xml, mvnw, .mvn/wrapper
+#
+#  Si alguna vez agregas una regla por extension (*.sql, *.yml), confirma antes
+#  que no se lleva alguno de estos por delante.

@@ -30,6 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RegistrationAvailabilityServiceTest {
 
     private static final String YO = "GTCOGTGC";
+    /** La cola por la que Dispatch entrega: va a la bitácora de consultas. */
+    private static final String COLA = "alias.requests.gtcogtgc";
     private static final String OTRO = "INDLGTGC";
 
     /** El ejemplo del repo: dos alias en una sola solicitud, con DPI. */
@@ -95,9 +97,9 @@ class RegistrationAvailabilityServiceTest {
                         "+50244444444", List.of(new ActiveRegistration(OTRO, true, false)),
                         // El segundo, en cuarentena.
                         "+50255556666", List.of(new ActiveRegistration(YO, false, true))), idx),
-                "ICGSGTGC");
+                java.util.Optional.empty(), "ICGSGTGC");
 
-        byte[] response = servicio.handle(request, YO);
+        byte[] response = servicio.handle(request, YO, COLA);
 
         var errores = validator.validate(response, Profile.REGISTRATION_AVAILABILITY_RESPONSE);
         assertThat(errores).as("la respuesta tiene que validar contra el perfil").isEmpty();
@@ -121,9 +123,10 @@ class RegistrationAvailabilityServiceTest {
     void disponibleValida() {
         var idx = index();
         var servicio = new RegistrationAvailabilityService(serializer, idx,
-                registryReturning(Map.of(), idx), "ICGSGTGC");
+                registryReturning(Map.of(), idx),
+                java.util.Optional.empty(), "ICGSGTGC");
 
-        byte[] response = servicio.handle(request, YO);
+        byte[] response = servicio.handle(request, YO, COLA);
 
         assertThat(validator.validate(response, Profile.REGISTRATION_AVAILABILITY_RESPONSE))
                 .isEmpty();
@@ -139,9 +142,9 @@ class RegistrationAvailabilityServiceTest {
         var servicio = new RegistrationAvailabilityService(serializer, idx,
                 registryReturning(Map.of(
                         "+50244444444", List.of(new ActiveRegistration(OTRO, true, false))), idx),
-                "ICGSGTGC");
+                java.util.Optional.empty(), "ICGSGTGC");
 
-        String xml = withoutPrefixes(servicio.handle(request, YO));
+        String xml = withoutPrefixes(servicio.handle(request, YO, COLA));
 
         // El DPI viene en la solicitud; que no vuelva en la respuesta no es
         // casualidad, es lo que el perfil impide y lo que el servicio no arma.

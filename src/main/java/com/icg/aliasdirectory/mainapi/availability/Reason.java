@@ -24,6 +24,21 @@ public enum Reason {
     /** El alias está vigente en otra entidad, a nombre de otro DPI. */
     ACTIVE_OTHER_BANK_DIFF_DPI,
 
+    /**
+     * La cuenta ya sostiene un alias vigente.
+     *
+     * <p>No está en el §3.5 por la misma razón que el anterior: la unicidad del
+     * Anexo es Prxy.Id + DPI y no menciona la cuenta. VDO confirmó el
+     * 07/10/2026 que una cuenta sostiene un solo alias vigente, y hasta
+     * entonces el alta aceptaba dos teléfonos distintos contra la misma cuenta.
+     *
+     * <p>A diferencia de los otros tres, este motivo no sale de
+     * {@link AvailabilityRule}: esa regla decide sobre los registros DEL ALIAS y
+     * la cuenta no entra en ellos. Lo decide RegistrationService con una
+     * consulta propia.
+     */
+    ACTIVE_SAME_ACCOUNT,
+
     /** Bloqueo temporal tras una baja: en 24 h se libera. */
     QUARANTINE
 }

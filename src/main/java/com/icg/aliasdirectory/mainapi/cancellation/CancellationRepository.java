@@ -26,6 +26,7 @@ public class CancellationRepository {
     /** Lo que hay que saber del registro para darlo de baja y volver a sellarlo. */
     private static final String COLUMNS = """
             SELECT r.id                          AS id,
+                   r.alias_id                    AS alias_id,
                    BIN_TO_UUID(r.alias_uuid, 1)  AS alias_uuid,
                    r.regn_id                     AS regn_id,
                    r.bank_id                     AS bank_id,
@@ -178,13 +179,17 @@ public class CancellationRepository {
      * @param registeredAt cuándo se dio de alta; decide si la baja pasa por
      *                     cuarentena o es inmediata
      */
-    public record Registration(long id, String aliasUuid, String regnId, int bankId, String bic,
+    public record Registration(long id, long aliasId, String aliasUuid, String regnId,
+            int bankId, String bic,
             String status, String nameDisplayLevel, Timestamp registeredAt, byte[] aliasBidx,
             byte[] dpiBidx, byte[] ibanEnc) {
 
         static final org.springframework.jdbc.core.RowMapper<Registration> MAPPER =
                 (rs, row) -> new Registration(
                         rs.getLong("id"),
+                        // Lo necesita la bandeja de salida: el shard se invalida
+                        // por alias, no por registro.
+                        rs.getLong("alias_id"),
                         rs.getString("alias_uuid"),
                         rs.getString("regn_id"),
                         rs.getInt("bank_id"),

@@ -90,6 +90,41 @@ public class TransitClient {
     }
 
     /**
+     * Cifra varios valores en UNA sola llamada.
+     *
+     * <p>Mismo motivo que el lote de descifrado: cada viaje suelto al KMS cuesta
+     * del orden de 4.84 ms y el lote 0.71 ms. Lo usa la auditoría de resolución,
+     * que cifra tres valores dentro de una operación con SLA de 100 ms.
+     *
+     * @return los ciphertexts en el MISMO orden en que entraron
+     */
+    public List<String> encrypt(String key, List<String> plaintexts) {
+        if (plaintexts.isEmpty()) {
+            return List.of();
+        }
+        ArrayNode lote = json.createArrayNode();
+        for (String p : plaintexts) {
+            lote.add(json.createObjectNode().put("plaintext", toBase64(p)));
+        }
+        var body = json.createObjectNode();
+        body.set("batch_input", lote);
+
+        JsonNode resultados = call("encrypt/" + key, body).get("batch_results");
+        var cifrados = new ArrayList<String>(plaintexts.size());
+        for (int i = 0; i < resultados.size(); i++) {
+            JsonNode fila = resultados.get(i);
+            // Igual que en el lote de descifrado: Transit responde 200 aunque UNA
+            // entrada falle, y el error viene dentro de su propia fila.
+            if (fila.hasNonNull("error")) {
+                throw new KmsException("El KMS no pudo cifrar el elemento " + i
+                        + " del lote: " + fila.get("error").asText());
+            }
+            cifrados.add(fila.get("ciphertext").asText());
+        }
+        return cifrados;
+    }
+
+    /**
      * Descifra varios valores en UNA sola llamada.
      *
      * <p>No es una comodidad: medido en E19-D01 contra OpenBao real, los siete

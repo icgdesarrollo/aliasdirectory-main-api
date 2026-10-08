@@ -99,6 +99,9 @@ public class RequestConsumer {
         MessageProperties props = request.getMessageProperties();
         String operation = header(props, P_OPERATION);
         String bic = header(props, P_BIC);
+        // La cola por la que entro va a la bitacora de consultas: de ella sale
+        // tambien el canal. Hoy todas las operaciones ISO llegan por aqui.
+        String queue = props.getConsumerQueue();
 
         // Se registra quién pidió qué, y NUNCA el cuerpo: lleva alias, DPI y
         // números de cuenta (regla T-8). El tamaño sí, que sirve de diagnóstico
@@ -110,9 +113,9 @@ public class RequestConsumer {
         try {
             return switch (operation) {
                 case "REGISTRATION_AVAILABILITY" ->
-                        response(registrationAvailability.handle(request.getBody(), bic), 200);
+                        response(registrationAvailability.handle(request.getBody(), bic, queue), 200);
                 case "RESOLUTION_AVAILABILITY" ->
-                        response(resolutionAvailability.handle(request.getBody(), bic), 200);
+                        response(resolutionAvailability.handle(request.getBody(), bic, queue), 200);
                 // El codigo HTTP lo trae la respuesta: 201 si el alias quedo
                 // registrado, 409 si estaba tomado. No se fija aqui a proposito —
                 // antes estaba fijo en 201 y los rechazos salian con una cabecera
@@ -132,7 +135,7 @@ public class RequestConsumer {
                 // alias no existe, 409 si esta en cuarentena.
                 case "RESOLUTION" -> resolution
                         .map(s -> {
-                            var r = s.handle(request.getBody(), bic);
+                            var r = s.handle(request.getBody(), bic, queue);
                             return response(r.body(), r.httpStatus());
                         })
                         .orElseGet(() -> error(ResponseCode.KMS_UNAVAILABLE, "resolucion de alias"));

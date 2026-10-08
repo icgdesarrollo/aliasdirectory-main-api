@@ -28,7 +28,9 @@ import java.util.List;
 public class ResolutionRepository {
 
     private static final String REGISTRATIONS_OF_ALIAS = """
-            SELECT BIN_TO_UUID(r.alias_uuid, 1) AS alias_uuid,
+            SELECT r.id                          AS registration_id,
+                   r.bank_id                     AS bank_id,
+                   BIN_TO_UUID(r.alias_uuid, 1)  AS alias_uuid,
                    a.type_cd                    AS alias_type,
                    a.value_enc                  AS alias_enc,
                    c.iban_enc                   AS iban_enc,
@@ -58,6 +60,8 @@ public class ResolutionRepository {
                 .param("tipo", tipo)
                 .param("aliasBidx", aliasBidx)
                 .query((rs, row) -> new EncryptedRow(
+                        rs.getLong("registration_id"),
+                        rs.getInt("bank_id"),
                         rs.getString("alias_uuid"),
                         rs.getString("alias_type"),
                         text(rs.getBytes("alias_enc")),
@@ -74,9 +78,14 @@ public class ResolutionRepository {
      *
      * @param active true si está ACTIVO; false si está BLOQUEADO (en cuarentena)
      */
-    public record EncryptedRow(String aliasUuid, String aliasType, String aliasEnc,
-            String ibanEnc, String accountTypeEnc, String currencyEnc, String bic,
-            boolean active) {
+    /**
+     * <p>{@code registrationId} y {@code bankId} no se devuelven al banco: son
+     * para {@code resolution_event_detail}, que registra QUÉ se devolvió
+     * referenciando el registro en vez de duplicar su criptograma.
+     */
+    public record EncryptedRow(long registrationId, int bankId, String aliasUuid,
+            String aliasType, String aliasEnc, String ibanEnc, String accountTypeEnc,
+            String currencyEnc, String bic, boolean active) {
     }
 
     /**

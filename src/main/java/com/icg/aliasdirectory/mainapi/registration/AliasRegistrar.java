@@ -4,6 +4,8 @@ import com.icg.aliasdirectory.mainapi.availability.BlindIndex;
 import com.icg.aliasdirectory.mainapi.availability.Normalizer;
 import com.icg.aliasdirectory.mainapi.integrity.IntegritySeal;
 import com.icg.aliasdirectory.mainapi.kms.TransitClient;
+import com.icg.aliasdirectory.mainapi.outbox.RegistryEventRepository;
+import com.icg.aliasdirectory.mainapi.outbox.RegistryOperation;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -40,25 +42,28 @@ public class AliasRegistrar {
     private final RegistryWriteRepository writeRepository;
     private final TransitClient kms;
     private final IntegritySeal seal;
+    private final RegistryEventRepository outbox;
     private final String encryptionKey;
 
     public AliasRegistrar(BlindIndex index, RegistryWriteRepository writeRepository,
-            TransitClient kms, IntegritySeal seal,
+            TransitClient kms, IntegritySeal seal, RegistryEventRepository outbox,
             @Value("${icg.kms.encryption-key}") String encryptionKey) {
         this.index = index;
         this.writeRepository = writeRepository;
         this.kms = kms;
         this.seal = seal;
+        this.outbox = outbox;
         this.encryptionKey = encryptionKey;
     }
 
     /**
      * Da de alta el registro y devuelve lo necesario para la respuesta.
      *
-     * <p>Recibe el alias, el DPI y el IBAN ya normalizados, y sus huellas ya
-     * calculadas: el servicio las necesitó antes para decidir si el alias estaba
-     * libre, y recalcularlas aquí sería gastar dos llamadas más al KMS para
-     * obtener exactamente los mismos bytes.
+     * <p>Recibe el alias, el DPI y el IBAN ya normalizados, y las cuatro huellas
+     * ya calculadas: el servicio las necesitó antes para decidir si el alias
+     * estaba libre y si el cliente y la cuenta estaban ocupados, y recalcularlas
+     * aquí sería gastar cuatro llamadas más al KMS para obtener exactamente los
+     * mismos bytes.
      *
      * <p>Las llamadas al KMS quedan dentro de la transacción. No es gratis —cada
      * cifrado es una ida por red con la transacción abierta— y se aceptó a
@@ -69,7 +74,8 @@ public class AliasRegistrar {
      */
     @Transactional
     public Registrado register(RegistrationData data, String alias, String dpi,
-            String iban, byte[] aliasBidx, byte[] dpiBidx, int bankId) {
+            String iban, byte[] aliasBidx, byte[] dpiBidx, byte[] ibanBidx,
+            byte[] customerIdBidx, int bankId) {
 
         int version = index.version();
 
@@ -77,12 +83,12 @@ public class AliasRegistrar {
 
         String customerId = Normalizer.customerId(data.customerId());
         long clienteBancoId = writeRepository.upsertCustomerBank(holderId, bankId,
-                encrypt(customerId), index.ofCustomerId(customerId), version);
+                encrypt(customerId), customerIdBidx, version);
 
         long aliasId = writeRepository.upsertAlias(
                 RegistrationService.ALIAS_TYPE, encrypt(alias), aliasBidx, version);
 
-        long accountId = writeRepository.upsertAccount(bankId, encrypt(iban), index.ofIban(iban),
+        long accountId = writeRepository.upsertAccount(bankId, encrypt(iban), ibanBidx,
                 version, encrypt(data.accountType()), encrypt(data.currency()));
 
         long linkId = link(aliasId, holderId);
@@ -108,6 +114,19 @@ public class AliasRegistrar {
                 aliasBidx, dpiBidx, writeRepository.accountIban(accountId, bankId));
         var huella = seal.compute(fields);
         writeRepository.seal(registrationId, huella.bytes(), huella.version());
+
+        // La bandeja de salida, dentro de ESTA transacción (PTRAD-843). Publicar
+        // a RabbitMQ aquí en vez de anotar la fila dejaría una ventana entre el
+        // commit y el envío: si el proceso cae ahí, el alias queda registrado y
+        // ningún shard se entera. El cliente no vería un error, vería que su
+        // alias recién dado de alta «no existe».
+        //
+        // affects_routing en true siempre: un alta añade este banco al conjunto
+        // de bancos del alias, y no puede ser un banco que ya estuviera —el único
+        // uk_registration_customer_active lo impide—, así que el índice global de
+        // ruteo cambia sin excepción.
+        outbox.append(aliasId, bankId, registrationId, RegistryOperation.ALTA,
+                true, data.msgIdOrigen());
 
         return new Registrado(uuid, regnId, now);
     }
