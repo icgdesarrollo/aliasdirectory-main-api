@@ -9,13 +9,8 @@ No expone endpoints HTTP hacia los bancos. Consume las colas de RabbitMQ que ali
 
 - **`aliasdirectory-messaging`** — el contrato ISO 20022. Mientras no haya Nexus, hay que
   instalarlo a mano: `cd ..\aliasdirectory-messaging && .\mvnw install`
-- **`aliasdirectory-infra`** — el `compose.yaml` que levanta RabbitMQ y OpenBao, y los
-  scripts del KMS y de la base
 
 ## Levantar en local
-
-Con los contenedores de `aliasdirectory-infra` arriba y un `.env` completo en la raiz
-de este repo (ver `.env.example` en infra):
 
 ```bash
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
